@@ -1727,7 +1727,7 @@ def dot(*arrays, dims=None, **kwargs):
     return result.transpose(*all_dims, missing_dims="ignore")
 
 
-def where(cond, x, y):
+def where(cond, x, y, keep_attrs=None):
     """Return elements from `x` or `y` depending on `cond`.
 
     Performs xarray-like broadcasting across input arguments.
@@ -1743,6 +1743,9 @@ def where(cond, x, y):
         values to choose from where `cond` is True
     y : scalar, array, Variable, DataArray or Dataset
         values to choose from where `cond` is False
+    keep_attrs : bool or str or callable, optional
+        How to treat attrs. If True, keep the attrs of `x`, or those of `y`
+        if `x` has none.
 
     Returns
     -------
@@ -1808,8 +1811,26 @@ def where(cond, x, y):
     Dataset.where, DataArray.where :
         equivalent methods
     """
+    from .dataset import Dataset
+
+    if keep_attrs is None:
+        keep_attrs = _get_keep_attrs(default=False)
+
+    # keep the attributes of x, the second parameter, to be consistent with
+    # the `where` method of `DataArray` and `Dataset`, falling back to those of
+    # y if x has none. Coordinates keep their own attributes, so these attrs
+    # are only applied after the computation.
+    keep_x_attrs = keep_attrs is True
+    if keep_x_attrs:
+        keep_attrs = "override"
+
+    def _attrs_of(obj, name=None):
+        if name is not None and isinstance(obj, Dataset):
+            return obj[name].attrs if name in obj.data_vars else {}
+        return getattr(obj, "attrs", {})
+
     # alignment for three arguments is complicated, so don't support it yet
-    return apply_ufunc(
+    result = apply_ufunc(
         duck_array_ops.where,
         cond,
         x,
@@ -1817,7 +1838,19 @@ def where(cond, x, y):
         join="exact",
         dataset_join="exact",
         dask="allowed",
+        keep_attrs=keep_attrs,
     )
+
+    if keep_x_attrs and hasattr(result, "attrs"):
+        # shallow copy so variables shared with the inputs are not modified
+        result = result.copy(deep=False)
+        result.attrs = dict(_attrs_of(x) or _attrs_of(y))
+        if isinstance(result, Dataset):
+            for name in result.data_vars:
+                attrs = _attrs_of(x, name) or _attrs_of(y, name)
+                result.variables[name].attrs = dict(attrs)
+
+    return result
 
 
 def polyval(coord, coeffs, degree_dim="degree"):
